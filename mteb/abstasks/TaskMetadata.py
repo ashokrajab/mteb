@@ -286,9 +286,9 @@ class TaskMetadata(BaseModel):
     @staticmethod
     def dataset_path_is_specified(dataset: dict[str, Any]) -> None:
         """This method checks that the dataset path is specified."""
-        if "path" not in dataset or dataset["path"] is None:
+        if ("path" not in dataset or dataset["path"] is None) and ("local_path" not in dataset or dataset["local_path"] is None):
             raise ValueError(
-                "You must specify the path to the dataset in the dataset dictionary. "
+                "You must specify the path or local_path to the dataset in the dataset dictionary. "
                 + "See https://huggingface.co/docs/datasets/main/en/package_reference/loading_methods#datasets.load_dataset"
             )
 
