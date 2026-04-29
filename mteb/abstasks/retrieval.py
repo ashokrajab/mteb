@@ -54,6 +54,7 @@ if TYPE_CHECKING:
         HFSubset,
         Modalities,
         QueryDatasetType,
+        CorpusDatasetType,
         RelevantDocumentsType,
         RetrievalOutputType,
         ScoresDict,
@@ -127,6 +128,18 @@ def _filter_queries_without_positives(
 
     return _relevant_docs, queries
 
+def _remove_queries_from_corpus(
+    queries: QueryDatasetType, corpus: CorpusDatasetType
+) -> tuple[RelevantDocumentsType, QueryDatasetType]:
+    
+    ids_1 = set(queries['id'])
+    ids_2 = set(corpus['id'])
+
+    # Find the intersection
+    common_ids = ids_1.intersection(ids_2)
+    if common_ids:
+        corpus = corpus.filter(lambda x: x["id"] not in common_ids)
+    return corpus
 
 class AbsTaskRetrieval(AbsTask):
     """The class which retrieval tasks inherit from.
@@ -380,6 +393,12 @@ class AbsTaskRetrieval(AbsTask):
         data_split["relevant_docs"], data_split["queries"] = (
             _filter_queries_without_positives(
                 data_split["relevant_docs"], data_split["queries"]
+            )
+        
+        )
+        data_split["corpus"] = (
+            _remove_queries_from_corpus(
+                data_split["queries"], data_split["corpus"]
             )
         )
         retriever = RetrievalEvaluator(
