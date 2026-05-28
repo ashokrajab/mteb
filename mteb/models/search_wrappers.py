@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import heapq
 import logging
+from concurrent.futures import ProcessPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -32,6 +33,78 @@ if TYPE_CHECKING:
     from .search_encoder_index.search_backend_protocol import IndexEncoderSearchProtocol
 
 logger = logging.getLogger(__name__)
+
+
+def _process_corpus_batch(batch_args: dict) -> dict:
+    """Process a single corpus batch in parallel.
+    
+    Args:
+        batch_args: Dictionary containing batch processing parameters
+        
+    Returns:
+        Dictionary with batch results containing indices and values
+    """
+    from mteb._create_dataloaders import create_dataloader
+    from mteb.types import PromptType
+    
+    batch_num = batch_args["batch_num"]
+    corpus_start_idx = batch_args["corpus_start_idx"]
+    corpus_chunk_size = batch_args["corpus_chunk_size"]
+    task_corpus = batch_args["task_corpus"]
+    model = batch_args["model"]
+    query_embeddings = batch_args["query_embeddings"]
+    task_metadata = batch_args["task_metadata"]
+    hf_split = batch_args["hf_split"]
+    hf_subset = batch_args["hf_subset"]
+    top_k = batch_args["top_k"]
+    encode_kwargs = batch_args["encode_kwargs"]
+    
+    logger.info(f"Encoding Batch {batch_num + 1}...")
+    
+    corpus_end_idx = min(
+        corpus_start_idx + corpus_chunk_size,
+        len(task_corpus),
+    )
+    sub_corpus = task_corpus.select(range(corpus_start_idx, corpus_end_idx))
+    sub_corpus_ids = list(sub_corpus["id"])
+    
+    sub_corpus_embeddings = model.encode(
+        create_dataloader(
+            sub_corpus,
+            task_metadata=task_metadata,
+            prompt_type=PromptType.document,
+            **encode_kwargs,
+        ),
+        task_metadata=task_metadata,
+        hf_split=hf_split,
+        hf_subset=hf_subset,
+        prompt_type=PromptType.document,
+        **encode_kwargs,
+    )
+
+    # Compute similarities using either cosine-similarity or dot product
+    logger.info("Computing Similarities...")
+    scores = model.similarity(query_embeddings, sub_corpus_embeddings)
+
+    # get top-k values
+    cos_scores_top_k_values_tensor, cos_scores_top_k_idx_tensor = torch.topk(
+        torch.as_tensor(scores),
+        min(
+            top_k + 1,
+            len(scores[1]) if len(scores) > 1 else len(scores[-1]),
+        ),
+        dim=1,
+        largest=True,
+    )
+    cos_scores_top_k_idx = cos_scores_top_k_idx_tensor.cpu().tolist()
+    cos_scores_top_k_values = cos_scores_top_k_values_tensor.cpu().tolist()
+
+    return {
+        "batch_num": batch_num,
+        "sub_corpus_ids": sub_corpus_ids,
+        "cos_scores_top_k_idx": cos_scores_top_k_idx,
+        "cos_scores_top_k_values": cos_scores_top_k_values,
+    }
 
 
 class SearchEncoderWrapper:
@@ -231,6 +304,7 @@ class SearchEncoderWrapper:
         hf_split: str,
         top_k: int,
         encode_kwargs: EncodeKwargs,
+        num_workers: int = 4,
     ) -> dict[str, list[tuple[float, str]]]:
         logger.info("Encoding Corpus in batches (this might take a while)...")
         if self.task_corpus is None:
@@ -241,6 +315,50 @@ class SearchEncoderWrapper:
         result_heaps: dict[str, list[tuple[float, str]]] = {
             qid: [] for qid in query_idx_to_id.values()
         }
+
+        multi_processing = False
+        if multi_processing:
+            corpus_len_per_proc = len(self.task_corpus) // num_workers
+            itr = range(0, len(self.task_corpus), corpus_len_per_proc)
+            # Prepare batch arguments for parallel processing
+            batch_args_list = []
+            for batch_num, corpus_start_idx in enumerate(itr):
+                batch_args = {
+                    "batch_num": batch_num,
+                    "corpus_start_idx": corpus_start_idx,
+                    "corpus_chunk_size": corpus_len_per_proc,
+                    "task_corpus": self.task_corpus,
+                    "model": self.model,
+                    "query_embeddings": query_embeddings,
+                    "task_metadata": task_metadata,
+                    "hf_split": hf_split,
+                    "hf_subset": hf_subset,
+                    "top_k": top_k,
+                    "encode_kwargs": encode_kwargs,
+                }
+                batch_args_list.append(batch_args)
+
+            # Process batches in parallel
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                batch_results = list(executor.map(_process_corpus_batch, batch_args_list))
+
+            # Aggregate results from all batches
+            for batch_result in batch_results:
+                sub_corpus_ids = batch_result["sub_corpus_ids"]
+                cos_scores_top_k_idx = batch_result["cos_scores_top_k_idx"]
+                cos_scores_top_k_values = batch_result["cos_scores_top_k_values"]
+            
+                result_heaps = self._sort_full_corpus_results(
+                    result_heaps=result_heaps,
+                    query_idx_to_id=query_idx_to_id,
+                    query_embeddings=query_embeddings,
+                    cos_scores_top_k_idx=cos_scores_top_k_idx,
+                    cos_scores_top_k_values=cos_scores_top_k_values,
+                    sub_corpus_ids=sub_corpus_ids,
+                    top_k=top_k,
+                )
+            return result_heaps
+        
         for batch_num, corpus_start_idx in enumerate(itr):
             logger.info(f"Encoding Batch {batch_num + 1}/{len(itr)}...")
             corpus_end_idx = min(
