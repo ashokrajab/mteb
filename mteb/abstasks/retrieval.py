@@ -54,6 +54,7 @@ if TYPE_CHECKING:
         HFSubset,
         Modalities,
         QueryDatasetType,
+        CorpusDatasetType,
         RelevantDocumentsType,
         RetrievalOutputType,
         ScoresDict,
@@ -131,6 +132,13 @@ def _filter_queries_without_positives(
 
     return _relevant_docs, queries
 
+def _remove_documents_from_corpus_with_title_or_text_same_as_query(
+    queries: QueryDatasetType, corpus: CorpusDatasetType
+) -> tuple[RelevantDocumentsType, QueryDatasetType]:
+    
+    set_queries_text = set(queries['text'])
+    corpus = corpus.filter(lambda x: x["title"] not in set_queries_text and x["text"] not in set_queries_text)
+    return corpus
 
 class AbsTaskRetrieval(AbsTask):
     """The class which retrieval tasks inherit from.
@@ -151,7 +159,7 @@ class AbsTaskRetrieval(AbsTask):
 
     ignore_identical_ids: bool = False
     abstask_prompt = "Retrieve text based on user query."
-    k_values: Sequence[int] = (1, 3, 5, 10, 20, 100, 1000)
+    k_values: Sequence[int] = (1, 3, 5, 10)#, 20, 100, 1000)
     _top_k: int = max(k_values)
     dataset: dict[str, dict[str, RetrievalSplitData]]
     _support_cross_encoder: bool = True
@@ -388,6 +396,12 @@ class AbsTaskRetrieval(AbsTask):
         data_split["relevant_docs"], data_split["queries"] = (
             _filter_queries_without_positives(
                 data_split["relevant_docs"], data_split["queries"]
+            )
+        
+        )
+        data_split["corpus"] = (
+            _remove_documents_from_corpus_with_title_or_text_same_as_query(
+                data_split["queries"], data_split["corpus"]
             )
         )
         retriever = RetrievalEvaluator(
