@@ -13,10 +13,10 @@ if TYPE_CHECKING:
 
 def _use_torch_compile() -> bool:
     gpu_ok = False
-    if torch.cuda.is_available():
-        device_cap = torch.cuda.get_device_capability()
-        if device_cap in ((7, 0), (8, 0), (9, 0)):  # noqa: PLR6201
-            gpu_ok = True
+    # if torch.cuda.is_available():
+    #     device_cap = torch.cuda.get_device_capability()
+    #     if device_cap in ((7, 0), (8, 0), (9, 0)):  # noqa: PLR6201
+    #         gpu_ok = True
 
     return gpu_ok
 
